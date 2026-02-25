@@ -1,0 +1,24 @@
+# awesome-acp-skills
+
+Awesome ACP skills is a collection of Claude/Copilot skills to fully automate your work on [Alauda Container Platform](https://www.alauda.io/). For example, you could do below steps with 0-lines of hand written code:
+
+1. Use copilot to vibe coding the target project
+2. Use "Dev Container" like Rancher Desktop to run unit test in a container env or K8s env.
+3. Package your Operator/Helm chart using `violet` (TBD).
+4. Upload your package to a test ACP platform to run tests using `violet`.
+5. Test ACP web interface use skill `webapp-testing`.
+
+# Quick start
+
+Clone this repo, copy all contents to your Claude `skills` directory. For Copilot users, create a folder `.github/skills` under your current project, and put this contents in this folder.
+
+Then just tell Claude/Copilot what to do.
+
+
+# Create other ACP skills using "skill-creator"
+
+You can simply create a new ACP skill using document provided by in [alauda document](https://docs.alauda.io/container_platform/4.2/). Download the document as PDF format, use this file as context and enter prompt like below to create your skill:
+
+```
+Read this document, and create a agent skill under current directory that can implement operations, trouble shootings in this document.
+```
