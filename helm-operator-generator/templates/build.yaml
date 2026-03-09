@@ -1,0 +1,190 @@
+apiVersion: builds.katanomi.dev/v1alpha1
+kind: Build
+spec:
+  params:
+    - name: bump_artifact
+      default: ""
+  runTemplate:
+    spec:
+      workspaces:
+        - name: source
+          volumeClaimTemplate:
+            spec:
+              accessModes:
+                - ReadWriteMany
+              resources:
+                requests:
+                  storage: 4096Mi
+  workspaces:
+    - description: >
+        This workspace is shared among all the pipeline tasks to read/write
+        common resources
+      name: source
+  tasks:
+    - name: expose
+      retries: 3
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: bump_artifact
+          value: "$(params.bump_artifact)"
+      taskSpec:
+        results:
+          - name: timestamp
+            type: string
+          - name: chart_version
+            type: string
+          - name: bump_artifact
+            type: string
+        workspaces:
+          - name: source
+            workspace: source
+        steps:
+          - image: build-harbor.alauda.cn/ops/alpine:3.21
+            name: build
+            imagePullPolicy: IfNotPresent
+            workingDir: "$(workspaces.source.path)"
+            script: |
+              set -x
+              sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
+              apk update
+              apk add yq tzdata git
+              ln -s /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+              timestamp=$(date +%Y%m%d%H%M%S)
+              echo "$timestamp"
+              echo -n "$timestamp" > $(results.timestamp.path)
+
+              branch=$(git branch --show-current)
+              chart_version=$(yq '.chart' ./.build/versions.yaml)
+              if [ "$branch" != "master" ]; then
+                chart_version="${chart_version}-pr"
+              fi
+              echo -n "$chart_version" > $(results.chart_version.path)
+              cat $(results.chart_version.path)
+
+
+              cat $(results.timestamp.path)
+              if [ "$(params.bump_artifact)" = "true" ]; then
+                echo -n "true" > $(results.bump_artifact.path)
+              fi
+    - name: init
+      retries: 3
+      workspaces:
+        - name: source
+          workspace: source
+      runAfter:
+        - expose
+      taskSpec:
+        workspaces:
+          - name: source
+            workspace: source
+        steps:
+          - image: build-harbor.alauda.cn/ops/alpine:3.21
+            name: build
+            imagePullPolicy: IfNotPresent
+            workingDir: "$(workspaces.source.path)"
+            resources:
+              requests:
+                cpu: "1"
+                memory: "1G"
+              limits:
+                cpu: "1"
+                memory: "1G"
+            script: |
+              #!/bin/sh
+              sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
+              env
+              apk update
+              apk add bash helm jq yq git make curl wget yq skopeo
+              rm -rf ./operator-sdk || true
+              rm -rf ./kustomize || true
+              wget http://prod-minio.alauda.cn/acp/ci/ingress-nginx-operator/operator-sdk
+              chmod a+x ./operator-sdk
+              wget http://prod-minio.alauda.cn/acp/ci/ingress-nginx-operator/kustomize
+              chmod a+x ./kustomize
+              rm -rf ./bin || true
+              mkdir ./bin
+              cp ./operator-sdk ./bin/
+              cp ./kustomize ./bin/
+              cp -f ./bin/* /usr/local/bin/
+              echo "$PATH"
+              which kustomize
+              which operator-sdk
+              echo "========================"
+
+              ls
+              which bash
+              export TIMESTAMP=$(tasks.expose.results.timestamp)
+              export CHART_VERSION="$(tasks.expose.results.chart_version)"
+              echo "TIMESTAMP $TIMESTAMP"
+              echo "CHART_VERSION $CHART_VERSION"
+              bash ./.build/build.sh
+    - name: build-kmr-operator-bundle
+      timeout: 30m
+      retries: 3
+      runAfter:
+        - init
+      taskRef:
+        kind: ClusterTask
+        name: alauda-build-image
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: container-image
+          value: build-harbor.alauda.cn/mlops/model-registry-operator-bundle
+        - name: container-image-tag
+          value: "v$(tasks.expose.results.chart_version)-build.$(tasks.expose.results.timestamp)"
+        - name: dockerfile
+          value: model-registry-operator/bundle.Dockerfile
+        - name: context
+          value: ./model-registry-operator
+        - name: build-extra-args
+          value: ""
+        - name: labels
+          value:
+            - commit=$(build.git.lastCommit.id)
+            - branch=$(build.git.revision.raw)
+        - name: platform
+          value:
+            - linux/amd64
+            - linux/arm64
+        - name: tools-image
+          value: registry.alauda.cn:60080/devops/builder-tools:v3.8-0-g377a3f9
+        - name: verbose
+          value: "true"
+    - name: build-kfmr-operator
+      runAfter:
+        - init
+      timeout: 30m
+      retries: 3
+      taskRef:
+        kind: ClusterTask
+        name: alauda-build-image
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: container-image
+          value: build-harbor.alauda.cn/mlops/model-registry-operator
+        - name: container-image-tag
+          value: "v$(tasks.expose.results.chart_version).$(tasks.expose.results.timestamp)"
+        - name: dockerfile
+          value: model-registry-operator/Dockerfile
+        - name: context
+          value: ./model-registry-operator
+        - name: build-extra-args
+          value: ""
+        - name: platform
+          value:
+            - linux/amd64
+            - linux/arm64
+        - name: tools-image
+          value: registry.alauda.cn:60080/devops/builder-tools:v3.8-0-g377a3f9
+        - name: verbose
+          value: "true"
+        - name: labels
+          value:
+            - commit=$(build.git.lastCommit.id)
+            - branch=$(build.git.revision.raw)

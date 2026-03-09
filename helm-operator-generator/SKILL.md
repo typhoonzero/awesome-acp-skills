@@ -1,88 +1,52 @@
 ---
 name: helm-operator-generator
-description: This skill automates the creation of a Helm-based Kubernetes Operator. It encapsulates the `operator-sdk init` workflow, allowing users to quickly scaffold a new operator project from an existing Helm chart or a boilerplate chart. Use this skill when you need to wrap a Helm chart into an operator without manually running `operator-sdk init` commands.
-license: MIT
+description: Generate a Helm operator from an existing Helm Chart and prepare it for CI/CD. Includes creating the operator with operator-sdk, updating RBAC permissions from chart templates, generating OLM bundle manifests with specific channels, creating Alauda CI configs, and verifying the completion.
 ---
 
 # Helm Operator Generator
 
-This skill provides a streamlined way to generate a Helm-based Kubernetes Operator project.
+This skill instructs the AI agent on how to generate a Helm-based Kubernetes operator from an existing Helm Chart and prepare all necessary configurations for deployment and CI/CD.
 
-## Overview
+## Workflow Instructions
 
-Creating a Helm operator typically involves running complex `operator-sdk` commands with multiple flags. This skill simplifies that process by providing a script that takes the essential parameters and executes the initialization for you.
+When the user asks to generate a Helm operator using this skill, perform the following steps carefully in sequence:
 
-## Capabilities
+### Step 1: Initialize the Helm Operator Project
 
--   **Scaffold Project**: Creates a new directory with the complete structure for a Helm operator.
--   **Helm Chart Integration**: Supports using local charts, repository charts, or boilerplate charts.
--   **Customization**: Allows specifying API group, version, and kind.
+1. Automatically determine the `domain`, `group`, `version`, and `kind` by parsing the `Chart.yaml` file of the provided Helm Chart (e.g., derive `kind` from the CamelCased chart name, `version` as `v1alpha1`, and sensible defaults for `domain` and `group`). Do NOT ask the user for these parameters. Only ask for the target project name/directory and the path/repository of the existing Helm Chart if they have not provided them.
+2. Use the `run_in_terminal` tool to run the following `operator-sdk` command inside the designated directory:
+   ```bash
+   operator-sdk init --plugins helm --domain <domain> --group <group> --version <version> --kind <kind> --helm-chart <path-or-repo>
+   ```
 
-## Usage
+### Step 2: Examine and Update RBAC Permissions
 
-This skill includes a Python script `scripts/generate_operator.py` that wraps the `operator-sdk` command.
+The generated `config/rbac/role.yaml` often misses permissions for the specific resources deployed by the Helm Chart templates.
+1. Use `read_file` or `grep_search` to examine the Helm Chart's template files (`helm-charts/<chart-name>/templates/*.yaml`).
+2. Identify all Kubernetes `kind`s and their corresponding `apiVersion`s (API groups) that the Helm Chart creates (e.g., Deployments, Services, Ingresses, ConfigMaps, Secrets, RBAC, CustomResources).
+3. Update `config/rbac/role.yaml` (using `replace_string_in_file` or `run_in_terminal` via `sed`/`yq`) to add the missing API groups and resources to the manager's ClusterRole rules. Allow `create`, `delete`, `get`, `list`, `patch`, `update`, `watch` verbs for these resources.
 
-### Prerequisites
+### Step 3: Generate Operator Bundle Manifests
 
-Ensure you have the following installed:
--   `operator-sdk` (installed in your PATH)
--   `helm` (if using charts from repositories)
--   `kubectl` (for deploying the operator)
+Generate the OLM (Operator Lifecycle Manager) bundle manifests.
+1. Determine the target Docker image and tag (e.g., `<your-registry>/<image>:<tag>`). If not provided by the user, ask for it or use a placeholder like `example.com/operator:v0.0.1`.
+2. Use the `run_in_terminal` tool to run the `make` bundle command:
+   ```bash
+   make bundle IMG="<image:tag>" CHANNELS=stable
+   ```
+3. **Important**: The `make bundle` command might be interactive (e.g., asking for the display name, description, provider name, etc.). If you are using a non-interactive shell, ensure you can either pipe inputs (e.g., `echo -e "\n\n\n\n" | make bundle ...`) or run the command and correctly handle the terminal output to provide the needed inputs via the terminal session.
 
-### Generating an Operator
+### Step 4: Create Alauda CI Configs
 
-To generate a new operator project, run the script from the terminal (assuming you are in the `helm-operator-skill` directory):
+Create standard Alauda CI configurations by copying the reference `build.yaml` and `build.sh` files provided in this skill's `templates/` directory (`/Users/wuyi/awesome-acp-skills/helm-operator-generator/templates/`).
+1. Copy `templates/build.yaml` to the root of the newly created operator project.
+2. Copy `templates/build.sh` to the root of the project and ensure it has executable permissions (`chmod +x build.sh`).
+3. Modify the newly copied `build.yaml` and `build.sh` files exactly as needed for the specific operator project, replacing placeholders (like `<image-name>`, paths, or specific tags) with the actual project's name and Docker registry path. The structure and commands should remain exactly like the referenced files.
 
-```bash
-python3 scripts/generate_operator.py <project_name> \
-  --domain <domain> \
-  --group <group> \
-  --version <version> \
-  --kind <kind> \
-  [--helm-chart <chart>] \
-  [--helm-chart-repo <repo_url>] \
-  [--helm-chart-version <chart_version>]
-```
+### Step 5: Verify Completion Correctness
 
-#### Examples
-
-**1. Create a basic operator with the default Nginx chart:**
-
-```bash
-python3 scripts/generate_operator.py nginx-operator \
-  --domain example.com \
-  --group demo \
-  --version v1alpha1 \
-  --kind Nginx
-```
-
-**2. Create an operator from an existing local Helm chart:**
-
-```bash
-python3 scripts/generate_operator.py my-app-operator \
-  --domain my.org \
-  --group apps \
-  --version v1 \
-  --kind MyApp \
-  --helm-chart ./charts/my-app
-```
-
-**3. Create an operator from a remote Helm chart repository:**
-
-```bash
-python3 scripts/generate_operator.py redis-operator \
-  --domain example.com \
-  --group cache \
-  --version v1alpha1 \
-  --kind Redis \
-  --helm-chart-repo https://charts.bitnami.com/bitnami \
-  --helm-chart redis
-```
-
-## After Generation
-
-Once the project is generated:
-
-1.  Navigate into the project directory: `cd <project_name>`
-2.  Build and push the image: `make docker-build docker-push IMG=<your-registry>/<image>:<tag>`
-3.  Deploy the operator: `make deploy IMG=<your-registry>/<image>:<tag>`
+1. Verify that the project directory was successfully created with all expected subdirectories (`config/`, `helm-charts/`, etc.).
+2. Verify that `config/rbac/role.yaml` includes the newly identified API groups from the Helm Chart templates.
+3. Verify the existence of the newly generated `bundle/` directory, containing the CSV (ClusterServiceVersion) and CRD manifests.
+4. Verify that `build.yaml` and `build.sh` exist and have correct syntax.
+5. Report the final status back to the user, providing a summary of the executed steps and confirming readiness for CI/CD deployment.
